@@ -4,21 +4,27 @@
 # Original GitHub project:
 # https://github.com/auino/cookidump
 
-import os
-import io
-import time
-import pathlib
 import argparse
-import platform
+import io
+import pathlib
+import time
+from os import path
+from os import walk
 from urllib.parse import urlparse
+from os import listdir
+from os.path import isfile, join
+from bs4 import BeautifulSoup
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
 
 PAGELOAD_TO = 3
 SCROLL_TO = 1
-MAX_SCROLL_RETRIES = 10
+MAX_SCROLL_RETRIES = 50
+LOGIN_RETRIES = 10
+
+username = ""
+password = ""
 
 
 def startBrowser(chrome_driver_path):
@@ -53,7 +59,56 @@ def recipeToFile(browser, filename):
     with io.open(filename, 'w', encoding='utf-8') as f: f.write(html)
 
 
-def run(webdriverfile, outputdir):
+def downloadRecipe(recipeURL, brw, outputdir):
+    try:
+        # building urls
+        u = str(urlparse(recipeURL).path)
+        u = u.replace("../", "")
+        if u[0] == '/':
+            u = u[1:]
+        relative_root = "".join(["../"] * u.count('/'))
+        outputPath = outputdir + u + '.html'
+        if path.exists(outputPath):
+            return
+        # opening recipe url
+        redirect(brw, recipeURL)
+        time.sleep(PAGELOAD_TO)
+        # removing the base href header
+        try:
+            brw.execute_script("var element = arguments[0];element.parentNode.removeChild(element);",
+                               brw.find_element_by_tag_name('base'))
+        except:
+            pass
+        # removing the name
+        brw.execute_script("var element = arguments[0];element.parentNode.removeChild(element);",
+                           brw.find_element_by_tag_name('core-transclude'))
+        # changing the top url
+        brw.execute_script("arguments[0].setAttribute(arguments[1], arguments[2]);",
+                           brw.find_element_by_class_name('page-header__home'), 'href', relative_root + 'index.html')
+
+        els = brw.find_elements_by_class_name('link--alt')
+        for el in els:
+            recipeURL = el.get_attribute('href')
+            u = urlparse(recipeURL).path
+            if len(u) > 1:
+                brw.execute_script("arguments[0].setAttribute(arguments[1], arguments[2]);", el, 'href',
+                                   relative_root + (u[1:] if u[0] == '/' else u) + '.html')
+
+        # saving the file
+        recipeToFile(brw, outputPath)
+    except:
+        pass
+
+
+def formatUrl(url):
+    if url.endswith(".html"):
+        url = url[:-5]
+    while url.count("//"):
+        url = url.replace("//", "/")
+    return url
+
+
+def run(webdriverfile, outputdir, elementClassName):
     """Scraps all recipes and stores them in html"""
     print('[CD] Welcome to cookidump, starting things off...')
     # fixing the outputdir parameter, if needed
@@ -65,19 +120,17 @@ def run(webdriverfile, outputdir):
     brw = startBrowser(webdriverfile)
 
     # opening the home page
-    brw.get(baseURL)
+    redirect(brw, baseURL)
     time.sleep(PAGELOAD_TO)
-
-    reply = input('[CD] Please login to your account and then enter y to continue: ')
 
     # recipes base url
     rbURL = 'https://cookidoo.' + str(locale) + '/search/'
-
-    brw.get(rbURL)
+    redirect(brw, rbURL)
+    redirect(brw, brw.current_url.replace('context=recipes', '&context=collections'))
     time.sleep(PAGELOAD_TO)
 
     # possible filters done here
-    reply = input('[CD] Set your filters, if any, and then enter y to continue: ')
+    input('[CD] Set your filters, if any, and then enter y to continue: ')
 
     print('[CD] Proceeding with scraping')
 
@@ -101,8 +154,9 @@ def run(webdriverfile, outputdir):
     count = 0
     while True:
         # checking if ended or not
-        currentElements = len(brw.find_elements_by_class_name('link--alt'))
-        if currentElements >= elementsToBeFound: break
+        currentElements = len(brw.find_elements_by_class_name(elementClassName))
+        if currentElements >= elementsToBeFound:
+            break
         # scrolling to the end
         brw.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(SCROLL_TO)
@@ -115,18 +169,19 @@ def run(webdriverfile, outputdir):
         print("Scrolling [" + str(currentElements) + "/" + str(elementsToBeFound) + "]")
         # checking if I can't load more elements
         count = count + 1 if previousElements == currentElements else 0
-        if count >= MAX_SCROLL_RETRIES: break
+        if count >= MAX_SCROLL_RETRIES:
+            break
         previousElements = currentElements
 
     # saving all recipes urls
-    els = brw.find_elements_by_class_name('link--alt')
-    recipesURLs = []
+    els = brw.find_elements_by_class_name(elementClassName)
+    collectionURLs = []
     for el in els:
-        recipeURL = el.get_attribute('href')
-        recipesURLs.append(recipeURL)
-        recipeID = recipeURL.split('/')[-1:][0]
+        el = el.find_element_by_xpath('a')
+        collectionURL = el.get_attribute('href')
+        collectionURLs.append(collectionURL)
         brw.execute_script("arguments[0].setAttribute(arguments[1], arguments[2]);", el, 'href',
-                           './recipes/' + recipeID + '.html')
+                           '.' + urlparse(collectionURL).path + '.html')
 
     # removing search bar
     brw.execute_script("var element = arguments[0];element.parentNode.removeChild(element);",
@@ -140,35 +195,25 @@ def run(webdriverfile, outputdir):
     listToFile(brw, outputdir)
 
     # getting all recipes
-    for recipeURL in recipesURLs:
-        try:
-            # building urls
-            u = str(urlparse(recipeURL).path)
-            if u[0] == '/': u = '.' + u
-            recipeID = u.split('/')[-1:][0]
-            # opening recipe url
-            brw.get(recipeURL)
-            time.sleep(PAGELOAD_TO)
-            # removing the base href header
-            try:
-                brw.execute_script("var element = arguments[0];element.parentNode.removeChild(element);",
-                                   brw.find_element_by_tag_name('base'))
-            except:
-                pass
-            # removing the name
-            brw.execute_script("var element = arguments[0];element.parentNode.removeChild(element);",
-                               brw.find_element_by_tag_name('core-transclude'))
-            # changing the top url
-            brw.execute_script("arguments[0].setAttribute(arguments[1], arguments[2]);",
-                               brw.find_element_by_class_name('page-header__home'), 'href', '../../index.html')
-            # saving the file
-            recipeToFile(brw, outputdir + 'recipes/' + recipeID + '.html')
-        except:
-            pass
+    for idx, collectionURL in enumerate(collectionURLs):
+        print(f"Downloading collections {collectionURL} [{idx} / {len(collectionURLs)}]")
+        downloadRecipe(collectionURL, brw, outputdir)
+
+    files = [path.join(dp, f) for dp, dn, filenames in walk(outputdir) for f in filenames]
+    urls = []
+    for idx, file in enumerate(files):
+        print(f"Getting hrefs from files [{idx} / {len(files)}]")
+        soup = BeautifulSoup(open(file, 'rb'), 'html.parser')
+        urls = urls + [baseURL + formatUrl(href) for href in
+                       [el['href'] for el in soup.find_all("a", class_="link--alt")] if href]
+
+    for idx, recipeURL in enumerate(urls):
+        print(f"Downloading recipes {recipeURL} [{idx} / {len(urls)}]")
+        downloadRecipe(recipeURL, brw, outputdir)
 
     # logging out
     logoutURL = 'https://cookidoo.' + str(locale) + '/profile/logout'
-    brw.get(logoutURL)
+    redirect(brw, logoutURL)
     time.sleep(PAGELOAD_TO)
 
     # closing session
@@ -176,9 +221,45 @@ def run(webdriverfile, outputdir):
     brw.close()
 
 
+def redirect(brw, url):
+    brw.get(url)
+    count = 0
+    while not isLogedIn(brw) and count < LOGIN_RETRIES:
+        count += 1
+        logIn(brw)
+        brw.get(url)
+    raise Exception("log in failed")
+
+
+def isLogedIn(brw):
+    return bool(brw.find_elements_by_css_selector(f'span[data-username="{username}"]'))
+
+
+def logIn(brw):
+    logIn = brw.find_element_by_css_selector("a[data-ga-event-label=Login]")
+    logIn.click()
+    try:
+        emailInBox = brw.find_element_by_id("email")
+        emailInBox.send_keys(username)
+        passwordInBox = brw.find_element_by_id("password")
+        passwordInBox.send_keys(password)
+        submitBtn = brw.find_element_by_id("j_submit_id")
+        submitBtn.click()
+    except:
+        pass
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Dump Cookidoo recipes from a valid account')
     parser.add_argument('webdriverfile', type=str, help='the path to the Chrome WebDriver file')
     parser.add_argument('outputdir', type=str, help='the output directory')
+    parser.add_argument('username', type=str, help='the path to the Chrome WebDriver file')
+    parser.add_argument('password', type=str, help='the output directory')
     args = parser.parse_args()
-    run(args.webdriverfile, args.outputdir)
+    username = args.username
+    password = args.password
+    run(args.webdriverfile, args.outputdir, 'core-tile--collection')
+    # run(args.webdriverfile, args.outputdir, 'link--alt', lambda el: el.get_attribute('href'))
+
+# email
+# j_submit_id
