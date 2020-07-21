@@ -72,7 +72,6 @@ def downloadRecipe(recipeURL, brw, outputdir):
             return
         # opening recipe url
         redirect(brw, recipeURL)
-        time.sleep(PAGELOAD_TO)
         # removing the base href header
         try:
             brw.execute_script("var element = arguments[0];element.parentNode.removeChild(element);",
@@ -122,13 +121,11 @@ def run(webdriverfile, outputdir, elementClassName):
 
     # opening the home page
     redirect(brw, baseURL)
-    time.sleep(PAGELOAD_TO)
 
     # recipes base url
     rbURL = 'https://cookidoo.' + str(locale) + '/search/'
     redirect(brw, rbURL)
     redirect(brw, brw.current_url.replace('context=recipes', '&context=collections'))
-    time.sleep(PAGELOAD_TO)
 
     # possible filters done here
     input('[CD] Set your filters, if any, and then enter y to continue: ')
@@ -215,7 +212,6 @@ def run(webdriverfile, outputdir, elementClassName):
     # logging out
     logoutURL = 'https://cookidoo.' + str(locale) + '/profile/logout'
     redirect(brw, logoutURL)
-    time.sleep(PAGELOAD_TO)
 
     # closing session
     print('[CD] Closing session\n[CD] Goodbye!')
@@ -226,17 +222,21 @@ def redirect(brw, url):
     brw.get(url)
     count = 0
     while not isLogedIn(brw) and count < LOGIN_RETRIES:
+        print(f"Trying to login the {count} times")
         count += 1
         logIn(brw)
         brw.get(url)
-    raise Exception("log in failed")
+    if count == LOGIN_RETRIES:
+        raise Exception("log in failed")
 
 
 def isLogedIn(brw):
+    time.sleep(PAGELOAD_TO)
     return bool(brw.find_elements_by_css_selector(f'span[data-username="{username}"]'))
 
 
 def logIn(brw):
+    time.sleep(PAGELOAD_TO)
     logIn = brw.find_element_by_css_selector("a[data-ga-event-label=Login]")
     logIn.click()
     try:
