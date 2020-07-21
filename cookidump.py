@@ -118,6 +118,7 @@ def run(webdriverfile, outputdir, elementClassName):
     baseURL = 'https://cookidoo.{}/'.format(locale)
 
     brw = startBrowser(webdriverfile)
+    brw.maximize_window()
 
     # opening the home page
     redirect(brw, baseURL)
